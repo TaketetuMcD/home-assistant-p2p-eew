@@ -13,7 +13,8 @@ Home Assistantで、P2P地震情報のWebSocketから**気象庁 緊急地震速
 - `接続` binary sensor
 - `EEWテスト` button
 - `p2p_eew_warning` イベント
-- 警告音とAutomation Blueprintを統合に同梱し、再起動時に自動配置
+- Automation Blueprintを同梱し、再起動時に自動配置
+- 警告音はHome Assistantの `/media/eew_warning.wav` を利用
 
 ## HACSからインストール
 
@@ -47,9 +48,11 @@ Home Assistantで、P2P地震情報のWebSocketから**気象庁 緊急地震速
 
 `/config/blueprints/automation/p2p_eew/eew_alarm.yaml`
 
-警告音は次へ配置されます。
+警告音はHome Assistant側の次のファイルを利用します。
 
 `/media/eew_warning.wav`
+
+既に旧版で配置済みの場合、HACS更新後もそのまま残ります。新規導入では任意の警告音をこの名前で配置してください。
 
 Media Source:
 

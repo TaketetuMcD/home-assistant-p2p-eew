@@ -1,0 +1,50 @@
+blueprint:
+  name: 緊急地震速報警報（P2P地震情報）
+  description: >
+    p2p_eew_warningイベントを受けたら、指定したメディアプレーヤーで警告音を再生します。
+    統合の「EEWテスト」ボタンでも同じ動作を確認できます。
+  domain: automation
+  input:
+    player:
+      name: 警告音を鳴らすスピーカー
+      selector:
+        target:
+          entity:
+            domain: media_player
+    alarm_file:
+      name: 警告音ファイル
+      description: >
+        Home AssistantのMediaフォルダに eew_warning.wav を置いた場合は、
+        既定値のままで使えます。
+      default: media-source://media_source/local/eew_warning.wav
+      selector:
+        text:
+    volume:
+      name: 音量
+      default: 0.8
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.05
+          mode: slider
+
+triggers:
+  - trigger: event
+    event_type: p2p_eew_warning
+
+conditions: []
+
+actions:
+  - action: media_player.volume_set
+    target: !input player
+    data:
+      volume_level: !input volume
+
+  - action: media_player.play_media
+    target: !input player
+    data:
+      media_content_id: !input alarm_file
+      media_content_type: audio/wav
+
+mode: restart

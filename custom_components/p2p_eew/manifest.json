@@ -1,16 +1,16 @@
 {
   "domain": "p2p_eew",
   "name": "P2P EEW",
-  "version": "0.4.0",
-  "config_flow": true,
-  "single_config_entry": true,
-  "documentation": "https://github.com/TaketetuMcD/home-assistant-p2p-eew",
   "codeowners": [
     "@TaketetuMcD"
   ],
+  "config_flow": true,
   "dependencies": [],
-  "iot_class": "cloud_push",
+  "documentation": "https://github.com/TaketetuMcD/home-assistant-p2p-eew",
   "integration_type": "service",
+  "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/TaketetuMcD/home-assistant-p2p-eew/issues",
-  "requirements": []
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.4.1"
 }

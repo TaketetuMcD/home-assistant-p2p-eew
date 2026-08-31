@@ -1,0 +1,14 @@
+{
+  "title": "P2P EEW",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Earthquake Early Warning",
+        "description": "Receives JMA Earthquake Early Warnings (warnings) through the P2PQuake WebSocket. Enter a Japanese prefecture or subdivision, or leave blank for all warnings.",
+        "data": {
+          "area": "Target area (blank = all Japan)"
+        }
+      }
+    }
+  }
+}

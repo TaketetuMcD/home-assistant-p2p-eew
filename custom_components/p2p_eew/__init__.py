@@ -9,6 +9,14 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from .client import P2PEEWClient
+from .const import (
+    CONF_AREA,
+    CONF_AREAS,
+    CONF_MIN_SCALE,
+    CONF_NOTIFY_INTENSITY_INCREASE,
+    DEFAULT_MIN_SCALE,
+    DEFAULT_NOTIFY_INTENSITY_INCREASE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +45,39 @@ async def _async_install_managed_blueprint(hass: HomeAssistant) -> None:
         _LOGGER.info("Installed EEW automation blueprint at %s", destination)
     except OSError as err:
         _LOGGER.error("Could not install EEW automation blueprint: %s", err)
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate a single-area version 1 entry to version 2 options."""
+    if entry.version > 2:
+        _LOGGER.error(
+            "Cannot migrate P2P EEW entry from unsupported version %s",
+            entry.version,
+        )
+        return False
+
+    if entry.version == 1:
+        old_area = str(entry.data.get(CONF_AREA, "")).strip()
+        new_data = {
+            key: value for key, value in entry.data.items() if key != CONF_AREA
+        }
+        new_data.update(
+            {
+                CONF_AREAS: [old_area] if old_area else [],
+                CONF_MIN_SCALE: DEFAULT_MIN_SCALE,
+                CONF_NOTIFY_INTENSITY_INCREASE: (
+                    DEFAULT_NOTIFY_INTENSITY_INCREASE
+                ),
+            }
+        )
+        hass.config_entries.async_update_entry(
+            entry,
+            data=new_data,
+            version=2,
+        )
+        _LOGGER.info("Migrated P2P EEW config entry to version 2")
+
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

@@ -15,8 +15,13 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     AUTO_CLEAR_SECONDS,
-    CONF_AREA,
+    CONF_AREAS,
+    CONF_MIN_SCALE,
+    CONF_NOTIFY_INTENSITY_INCREASE,
+    DEFAULT_MIN_SCALE,
+    DEFAULT_NOTIFY_INTENSITY_INCREASE,
     EVENT_CANCEL,
+    EVENT_UPDATE,
     EVENT_WARNING,
     HISTORY_URL,
     RECOVERY_LIMIT,
@@ -24,6 +29,7 @@ from .const import (
     TEST_CLEAR_SECONDS,
     WS_URL,
 )
+from .matching import matching_areas, max_scale
 
 _LOGGER = logging.getLogger(__name__)
 JST = timezone(timedelta(hours=9))
@@ -33,7 +39,27 @@ class P2PEEWClient:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
-        self.area = str(entry.data.get(CONF_AREA, "")).strip()
+        settings = {**entry.data, **entry.options}
+        configured_areas = settings.get(CONF_AREAS, [])
+        if isinstance(configured_areas, str):
+            configured_areas = [configured_areas]
+        self.areas = list(
+            dict.fromkeys(
+                str(area).strip()
+                for area in configured_areas
+                if str(area).strip()
+            )
+        )
+        try:
+            self.min_scale = int(settings.get(CONF_MIN_SCALE, DEFAULT_MIN_SCALE))
+        except (TypeError, ValueError):
+            self.min_scale = DEFAULT_MIN_SCALE
+        self.notify_intensity_increase = bool(
+            settings.get(
+                CONF_NOTIFY_INTENSITY_INCREASE,
+                DEFAULT_NOTIFY_INTENSITY_INCREASE,
+            )
+        )
 
         self.connected = False
         self.warning_active = False
@@ -54,6 +80,7 @@ class P2PEEWClient:
         #   report 2: target added  -> first alert
         #   later reports           -> no duplicate alert
         self._alerted_event_ids: set[str] = set()
+        self._event_max_scales: dict[str, int] = {}
 
     def add_listener(self, callback: Callable[[], None]) -> Callable[[], None]:
         self._listeners.add(callback)
@@ -126,37 +153,9 @@ class P2PEEWClient:
             await self._ws.close()
         self._set_connected(False)
 
-    @staticmethod
-    def _normalise_area(value: Any) -> str:
-        return str(value or "").replace(" ", "").replace("　", "").strip()
-
-    def _matches_area(self, area: dict[str, Any]) -> bool:
-        if not self.area:
-            return True
-
-        target = self._normalise_area(self.area)
-        pref = self._normalise_area(area.get("pref"))
-        name = self._normalise_area(area.get("name"))
-
-        # Exact match is preferred. For convenience, specifying a prefecture
-        # such as "神奈川県" also matches its finer subdivisions. Empty values
-        # are never considered matches.
-        if pref and target == pref:
-            return True
-        if name and target == name:
-            return True
-
-        # A prefecture-level target should match all its subdivisions.
-        if pref and target == pref:
-            return True
-
-        # Accommodate labels such as "神奈川県東部" when the API's pref/name
-        # split differs slightly, while never treating an empty string as a hit.
-        if pref and target.startswith(pref):
-            if name and (target == name or target.endswith(name)):
-                return True
-
-        return False
+    @property
+    def area_filter_label(self) -> str:
+        return ", ".join(self.areas)
 
     @staticmethod
     def _parse_issue_time(value: Any) -> datetime | None:
@@ -279,53 +278,62 @@ class P2PEEWClient:
         serial = str(issue.get("serial") or "")
 
         if data.get("cancelled") is True:
+            # A cancellation for another region must not stop an automation
+            # that this integration never started.
+            if not event_id or event_id not in self._alerted_event_ids:
+                return
             if event_id and event_id == self.last_warning.get("event_id"):
                 self.warning_active = False
+                if self._clear_task and not self._clear_task.done():
+                    self._clear_task.cancel()
                 self._notify()
             self.hass.bus.async_fire(
                 EVENT_CANCEL,
                 {
                     "event_id": event_id,
                     "serial": serial,
-                    "area_filter": self.area,
+                    "area_filter": self.area_filter_label,
+                    "area_filters": self.areas,
+                    "selected_areas": self.areas,
+                    "minimum_scale": self.min_scale,
+                    "test": False,
+                    "was_alerted": True,
                 },
             )
+            self._event_max_scales.pop(event_id, None)
             return
 
-        # Evaluate the configured area on EVERY report.
+        # Evaluate all configured areas on EVERY report.
         # Do not deduplicate by eventId before this point.
         areas = data.get("areas") or []
-        matched_areas = [
-            a for a in areas
-            if isinstance(a, dict) and self._matches_area(a)
-        ]
+        if not isinstance(areas, list):
+            return
+        matched_areas = matching_areas(self.areas, areas)
 
-        if self.area and not matched_areas:
+        if self.areas and not matched_areas:
             _LOGGER.debug(
-                "EEW %s report %s does not yet include target area %s",
+                "EEW %s report %s does not yet include target areas %s",
                 event_id,
                 serial,
-                self.area,
+                self.area_filter_label,
             )
             return
 
-        source_areas = matched_areas if matched_areas else areas
-        scale_from = max(
-            (
-                int(a.get("scaleFrom", -1))
-                for a in source_areas
-                if isinstance(a, dict)
-            ),
-            default=-1,
-        )
-        scale_to = max(
-            (
-                int(a.get("scaleTo", -1))
-                for a in source_areas
-                if isinstance(a, dict)
-            ),
-            default=-1,
-        )
+        source_areas = matched_areas
+        scale_from = max_scale(source_areas, "scaleFrom")
+        scale_to = max_scale(source_areas, "scaleTo")
+
+        # Use the upper end of P2P's predicted range so that a potentially
+        # severe warning is not discarded merely because scaleFrom is lower.
+        if self.min_scale >= 0 and scale_to < self.min_scale:
+            _LOGGER.debug(
+                "EEW %s report %s is below minimum scale %s (predicted %s)",
+                event_id,
+                serial,
+                self.min_scale,
+                scale_to,
+            )
+            return
 
         earthquake = data.get("earthquake") or {}
         hypocenter = earthquake.get("hypocenter") or {}
@@ -342,7 +350,23 @@ class P2PEEWClient:
             "longitude": hypocenter.get("longitude"),
             "max_scale_from": scale_from,
             "max_scale_to": scale_to,
-            "area_filter": self.area,
+            "area_filter": self.area_filter_label,
+            "area_filters": self.areas,
+            "selected_areas": self.areas,
+            "minimum_scale": self.min_scale,
+            "matched_area_names": [
+                area.get("name") or area.get("pref") for area in source_areas
+            ],
+            "arrival_times": {
+                str(area.get("name") or area.get("pref")): area.get("arrivalTime")
+                for area in source_areas
+                if area.get("arrivalTime")
+            },
+            "kind_codes": {
+                str(area.get("name") or area.get("pref")): area.get("kindCode")
+                for area in source_areas
+                if area.get("kindCode") is not None
+            },
             "areas": source_areas,
             "test": False,
             "recovered_after_reconnect": recovered,
@@ -359,18 +383,39 @@ class P2PEEWClient:
         # inside target" still triggers exactly once.
         dedup_key = event_id or message_id or f"{issue.get('time')}:{serial}"
 
+        previous_max_scale = self._event_max_scales.get(dedup_key, -1)
+        self._event_max_scales[dedup_key] = max(previous_max_scale, scale_to)
+
         if dedup_key in self._alerted_event_ids:
+            if (
+                self.notify_intensity_increase
+                and scale_to > previous_max_scale
+            ):
+                update_details = {
+                    **details,
+                    "previous_max_scale_to": previous_max_scale,
+                    "update_reason": "intensity_increase",
+                }
+                _LOGGER.warning(
+                    "EEW UPDATE: event=%s serial=%s scale=%s->%s",
+                    event_id,
+                    serial,
+                    previous_max_scale,
+                    scale_to,
+                )
+                self.hass.bus.async_fire(EVENT_UPDATE, update_details)
             return
 
         self._alerted_event_ids.add(dedup_key)
         if len(self._alerted_event_ids) > 200:
-            self._alerted_event_ids.pop()
+            expired_key = self._alerted_event_ids.pop()
+            self._event_max_scales.pop(expired_key, None)
 
         _LOGGER.warning(
             "EEW ALERT: event=%s serial=%s target=%s recovered=%s",
             event_id,
             serial,
-            self.area or "全国",
+            self.area_filter_label or "全国",
             recovered,
         )
         self.hass.bus.async_fire(EVENT_WARNING, details)
@@ -396,6 +441,9 @@ class P2PEEWClient:
     async def async_test_warning(self) -> None:
         now = datetime.now(timezone.utc)
         event_id = f"TEST-{int(now.timestamp())}"
+        test_area = self.areas[0] if self.areas else "テスト地域"
+        test_scale_to = max(55, self.min_scale)
+        test_scale_from = min(50, test_scale_to)
 
         details: dict[str, Any] = {
             "event_id": event_id,
@@ -407,15 +455,21 @@ class P2PEEWClient:
             "depth_km": 30,
             "latitude": None,
             "longitude": None,
-            "max_scale_from": 50,
-            "max_scale_to": 55,
-            "area_filter": self.area,
+            "max_scale_from": test_scale_from,
+            "max_scale_to": test_scale_to,
+            "area_filter": self.area_filter_label,
+            "area_filters": self.areas,
+            "selected_areas": self.areas,
+            "minimum_scale": self.min_scale,
+            "matched_area_names": [test_area],
+            "arrival_times": {},
+            "kind_codes": {},
             "areas": [
                 {
-                    "pref": self.area or "テスト地域",
-                    "name": self.area or "テスト地域",
-                    "scaleFrom": 50,
-                    "scaleTo": 55,
+                    "pref": test_area,
+                    "name": test_area,
+                    "scaleFrom": test_scale_from,
+                    "scaleTo": test_scale_to,
                 }
             ],
             "test": True,

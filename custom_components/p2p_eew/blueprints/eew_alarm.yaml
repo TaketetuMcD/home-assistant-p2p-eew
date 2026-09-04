@@ -1,8 +1,9 @@
 blueprint:
   name: 緊急地震速報警報（P2P地震情報）
   description: >
-    p2p_eew_warningイベントを受けたら、指定したメディアプレーヤーで警告音を再生します。
-    統合の「EEWテスト」ボタンでも同じ動作を確認できます。
+    初回警報または予測震度が上がった続報を受けたら、指定したメディアプレーヤーで
+    警告音を再生します。取消報では再生を停止できます。
+    統合の「EEWテスト」ボタンでも初回警報と同じ動作を確認できます。
   domain: automation
   input:
     player:
@@ -28,23 +29,51 @@ blueprint:
           max: 1
           step: 0.05
           mode: slider
+    stop_on_cancel:
+      name: 取消報で再生を停止
+      description: 対象にした緊急地震速報の取消報を受けた場合に停止します。
+      default: true
+      selector:
+        boolean:
 
 triggers:
   - trigger: event
     event_type: p2p_eew_warning
+    id: warning
+  - trigger: event
+    event_type: p2p_eew_update
+    id: update
+  - trigger: event
+    event_type: p2p_eew_cancel
+    id: cancel
 
 conditions: []
 
-actions:
-  - action: media_player.volume_set
-    target: !input player
-    data:
-      volume_level: !input volume
+variables:
+  stop_on_cancel_enabled: !input stop_on_cancel
 
-  - action: media_player.play_media
-    target: !input player
-    data:
-      media_content_id: !input alarm_file
-      media_content_type: audio/wav
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: cancel
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ stop_on_cancel_enabled }}"
+            then:
+              - action: media_player.media_stop
+                target: !input player
+    default:
+      - action: media_player.volume_set
+        target: !input player
+        data:
+          volume_level: !input volume
+
+      - action: media_player.play_media
+        target: !input player
+        data:
+          media_content_id: !input alarm_file
+          media_content_type: audio/wav
 
 mode: restart

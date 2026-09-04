@@ -12,5 +12,5 @@
   "issue_tracker": "https://github.com/TaketetuMcD/home-assistant-p2p-eew/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.4.1"
+  "version": "0.5.0"
 }
